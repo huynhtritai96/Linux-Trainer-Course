@@ -1,5 +1,35 @@
 ### 1. Physical Address Space
+```
++------------------+  <- 0xFFFFFFFF (4GB)
+|      32-bit      |
+|  memory mapped   |
+|     devices      |
+|                  |
+/\/\/\/\/\/\/\/\/\/\
 
+/\/\/\/\/\/\/\/\/\/\
+|                  |
+|      Unused      |
+|                  |
++------------------+  <- depends on amount of RAM
+|                  |
+|                  |
+| Extended Memory  |
+|                  |
+|                  |
++------------------+  <- 0x00100000 (1MB)
+|     BIOS ROM     |
++------------------+  <- 0x000F0000 (960KB)
+|  16-bit devices, |
+|  expansion ROMs  |
++------------------+  <- 0x000C0000 (768KB)
+|   VGA Display    |
++------------------+  <- 0x000A0000 (640KB)
+|                  |
+|    Low Memory    |
+|                  |
++------------------+  <- 0x00000000
+```
 1. **Definition:**
    - The physical address space refers to the entire range of memory addresses accessible by processors.
 
@@ -149,9 +179,207 @@ In the scenario shown in the images:
 
 #### Alocate memory for RAM 
 --> qemu-system-i386 -nographic -M pc -kernel output/image/s/bzImage -drive file=output/images/rootfs.ext2,if=virtio,format=raw -append "root=/dev/vda console=ttyS0,115200" -net nic,model=virtio -net user -m 512M
+```
 - 512M
 - m 1G
+```
 
+### 5. Virtual Address Space for 32-bit processors
+```
+      .------------------------. 0xFFFFFFFF 
+      |                        | (4 GB) 
+      |    Kernel addresses    | 
+      |                        | 
+      |                        | 
+      .------------------------.CONFIG_PAGE_OFFSET 
+      |                        |(x86: 0xC0000000, ARM: 0x80000000) 
+      |                        | 
+      |                        | 
+      |  User space addresses  | 
+      |                        | 
+      |                        | 
+      |                        | 
+      |                        | 
+      '------------------------' 00000000
+```
+1. **Virtual Memory**:
+   - In Linux, every memory address is **virtual**. They do not point directly to addresses in physical RAM. Instead, when a memory location is accessed, a **translation mechanism** is performed to match the corresponding physical memory.
+
+2. **Size of Virtual Address Space**:
+   - The virtual address space is **4 GB** on 32-bit systems, even on systems with less than 4 GB of physical memory.
+
+3. **Division of Virtual Address Space**:
+   - The virtual address space is divided into two main parts:
+     - **User Space**: This is the area allocated for applications.
+     - **Kernel Space**: This is the area allocated for the kernel.
+
+4. **3G/1G Split**:
+   - The split between **user space** and **kernel space** is determined by a kernel configuration parameter called **PAGE_OFFSET**.
+   - By default, this split is set as **3GB for user space** and **1GB for kernel space**.
+
+5. **CONFIG_PAGE_OFFSET**:
+   - The kernel configuration for `PAGE_OFFSET` is typically defined in the kernel source (e.g., for x86, it's set at `0x C000 0000`, for ARM, it's set at `0x 8000 0000`).
+
+### 6.Why Kernel Shares its Address Space for All Processes
+
+1. **User Space vs Kernel Space**:
+   - **User address space** is allocated per process, meaning each process has its own space (like a sandbox, separated from other processes).
+   - **Kernel address space** is the same for all processes, as there is only **one kernel** that handles all processes.
+
+2. **Reason for Shared Kernel Space**:
+   - **System Calls**: Every process uses system calls, which involve the kernel. If the kernel had separate memory spaces for each process, there would be an overhead of constantly switching between different memory spaces for each entry and exit from the kernel.
+   - **Efficiency**: By mapping the kernel's memory into each process's virtual address space, the system avoids the cost of switching memory spaces every time a system call is made.
+
+3. **Global Variables in Kernel**:
+   - Since the kernel space is shared by all processes, any global variable in the kernel is accessible and can be modified by all processes. This enables processes to access and update shared kernel resources efficiently.
+
+
+
+### 7. 64-bit Memory Map
+
+1. **System Calls and Kernel Interaction**:
+   - Every process uses system calls, which involve the kernel. Mapping the kernel’s virtual memory address into each process’s virtual address space helps avoid the overhead of switching memory address spaces on each entry to and exit from the kernel.
+
+2. **64-bit Memory Map**:
+   - The memory map is divided into **user-space** and **kernel-space**.
+     - **User-space virtual memory**: Located in the range `0x0000000000000000` to `0x00007fffffffffff` (128 TB).
+     - **Non-canonical**: In the range `0x0000800000000000` to `0xffff7fffffffffff` (~16M TB).
+     - **Kernel-space virtual memory**: Located in the range `0xffff800000000000` to `0xffffffffffffffff` (128 TB).
+```
+===========================================================================================
+    Start addr    |   Offset   |     End addr     |  Size   | VM area description
+===========================================================================================
+                  |            |                  |         |
+ 0000000000000000 |    0       | 00007fffffffffff |  128 TB | user-space virtual memory
+__________________|____________|__________________|_________|______________________________
+                  |            |                  |         |
+ 0000800000000000 | +128    TB | ffff7fffffffffff | ~16M TB | non-canonical
+__________________|____________|__________________|_________|______________________________
+                  |            |                  |         |
+ ffff800000000000 | -128    TB | ffffffffffffffff |  128 TB | kernel-space virtual memory
+__________________|____________|__________________|_________|______________________________
+```
+Documentation/x86/x86_64/mm.txt
+  
+### 8. Converting Virtual address to physical address and vice versa
+Kinds of Memory
+===============
+
+Kernel and user space work with virtual addresses .
+
+These virtual addresses are mapped to physical addresses by memory management hardware (MMU)
+
+Header File: #include <asm/io.h>
+
+phys_addr = virt_to_phys(virt_addr);
+virt_addr = phys_to_virt(phys_addr);
+
+``` hello.c
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <asm/io.h>
+
+MODULE_LICENSE("GPL");
+static int __init test_hello_init(void)
+{
+    int i = 10;
+    void *virtual_address = (void *)&i;
+    phys_addr_t physical_address = virt_to_phys(virtual_address);
+
+    pr_info("Virtual Address(hashed) of i is %p\n", virtual_address);
+    pr_info("Virtual Address(unmodified) of i is %px\n", virtual_address);
+    pr_info("Physical Address of i is %pa\n", &physical_address);
+    pr_info("Virtual address of i is %px\n", phys_to_virt(physical_address));
+    return -1;
+}
+
+static void __exit test_hello_exit(void)
+{
+}
+
+module_init(test_hello_init);
+module_exit(test_hello_exit);
+
+Output:
+Virtual Address (hashed) of i is 00000000cc9C3896
+Virtual Address (unmodified) of i is fffff90344b93c54 --------
+Physical Address of i is 0x0000203bc4b93c54
+Virtual address of i is ffffb90344b93c54 ---------
+
+
+Makefile
+obj-m := hello.o
+
+all:
+	make -C /lib/modules/`uname -r`/build M=$(PWD) modules
+clean:
+	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+
+Document: /linux-5.2.8/Documentation/core-api/printk-format.rst
+
+
+```
+
+dmesg -w   
+jobs    
+kill %1   
+kill %2   
+mod    
+
+#### Introduction:
+In Linux kernel programming, when debugging or logging information using the `printk` function, it's important to use the correct format specifiers for various types of variables. This ensures that the output is properly formatted and readable.
+
+#### Authors:
+- Randy Dunlap <rdunlap@infradead.org>
+- Andrew Murray <amurray@mpc-data.co.uk>
+
+---
+
+#### 1. **Integer Types and Corresponding Format Specifiers**:
+
+Each variable type has its corresponding format specifier for `printk`. Below are the commonly used format specifiers for integer types:
+
+| **Type**              | **Printk Format Specifier**     |
+|-----------------------|---------------------------------|
+| **char**              | `%hhd` or `%hhx`                |
+| **unsigned char**     | `%hhu` or `%hhx`                |
+| **short int**         | `%hd` or `%hx`                  |
+| **unsigned short int**| `%hu` or `%hx`                  |
+| **int**               | `%d` or `%x`                    |
+| **unsigned int**      | `%u` or `%X`                    |
+| **long**              | `%ld` or `%lx`                  |
+| **unsigned long**     | `%lu` or `%lx`                  |
+| **long long**         | `%lld` or `%llx`                |
+| **unsigned long long**| `%llu` or `%llx`                |
+
+These format specifiers are crucial for correctly printing the values of variables, particularly when debugging within the Linux kernel.
+
+---
+
+#### 2. **Pointer Types**:
+Pointers can also be printed with specific format specifiers. The most common format for printing pointer values is `%p`. By default, `%p` hashes the address before printing to protect kernel memory information. If you need the actual address, you can use `%px`.
+
+##### Extended Pointer Specifiers:
+- `%p`: Prints the raw pointer, with the address hashed (to avoid leaking information about the kernel layout).
+- `%px`: Prints the raw pointer without hashing, showing the actual address.
+
+##### Error Messages for Invalid Pointers:
+- **(null)**: Data on plain NULL address.
+- **(efault)**: Data on invalid address.
+- **(einval)**: Invalid data on a valid address.
+
+These specifiers help prevent leaking information about the kernel memory layout while providing the necessary information for debugging.
+
+---
+
+#### 3. **Plain Pointers**:
+On 64-bit machines, pointers are hashed by default to prevent leaking kernel memory layout. The `%p` specifier hashes the pointer address before printing. If you really need the actual address, you can use `%px`.
+
+Example of printing pointers:
+- Plain pointer: `%p` will display a hashed address, like `000000000000abcd`.
+- Actual pointer: `%px` will print the unmodified address.
+
+---
 
 
 
